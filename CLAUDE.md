@@ -1,5 +1,7 @@
 # Claude Code Skills Configuration
 
+**IMPORTANT: At the start of every task, read `.claude/skills/superpowers/using-superpowers/SKILL.md` to determine which skills apply. Invoke relevant skills BEFORE taking any action.**
+
 This repository is equipped with two curated skills frameworks for AI-assisted development.
 
 ## Superpowers (obra/superpowers)
