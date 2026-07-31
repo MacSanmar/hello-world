@@ -25,6 +25,7 @@ import {
   upsertPerson,
   removePerson,
   markContacted,
+  removeContactEntry,
   migrate,
   serialize,
   validateImport,
@@ -557,5 +558,51 @@ describe("serialize / validateImport", () => {
     const result = validateImport(JSON.stringify(raw));
     assert.equal(result.ok, true);
     assert.deepEqual(result.state.persons[0].contactHistory, [{ date: "2026-07-01", note: "ok" }]);
+  });
+});
+
+describe("markContacted (same-day guard)", () => {
+  it("does not add a duplicate entry for the same day", () => {
+    const p = person({ id: "a", lastContact: TODAY, contactHistory: [{ date: TODAY, note: "" }] });
+    const state = { schemaVersion: 1, persons: [p] };
+    const next = markContacted(state, "a", TODAY);
+    assert.equal(next.persons[0].contactHistory.length, 1);
+    assert.equal(next.persons[0].lastContact, TODAY);
+  });
+});
+
+describe("removeContactEntry", () => {
+  const p = person({
+    id: "a",
+    lastContact: "2026-07-20",
+    contactHistory: [
+      { date: "2026-07-20", note: "recent" },
+      { date: "2026-06-01", note: "ouder" },
+    ],
+  });
+  const state = { schemaVersion: 1, persons: [p] };
+
+  it("removes an entry and recomputes lastContact from the newest remaining", () => {
+    const next = removeContactEntry(state, "a", 0);
+    assert.deepEqual(next.persons[0].contactHistory, [{ date: "2026-06-01", note: "ouder" }]);
+    assert.equal(next.persons[0].lastContact, "2026-06-01");
+    assert.equal(state.persons[0].contactHistory.length, 2); // input untouched
+  });
+
+  it("keeps lastContact when a non-newest entry is removed", () => {
+    const next = removeContactEntry(state, "a", 1);
+    assert.equal(next.persons[0].lastContact, "2026-07-20");
+    assert.equal(next.persons[0].contactHistory.length, 1);
+  });
+
+  it("sets lastContact to null when the last entry disappears", () => {
+    const single = { schemaVersion: 1, persons: [person({ id: "a", lastContact: TODAY, contactHistory: [{ date: TODAY, note: "" }] })] };
+    assert.equal(removeContactEntry(single, "a", 0).persons[0].lastContact, null);
+  });
+
+  it("ignores unknown ids and out-of-range indices", () => {
+    assert.deepEqual(removeContactEntry(state, "zzz", 0), state);
+    assert.deepEqual(removeContactEntry(state, "a", 99), state);
+    assert.deepEqual(removeContactEntry(state, "a", -1), state);
   });
 });

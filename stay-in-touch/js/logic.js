@@ -310,11 +310,26 @@ export function removePerson(state, id) {
 export function markContacted(state, id, todayStr, note = "") {
   return {
     ...state,
-    persons: state.persons.map((p) =>
-      p.id === id
-        ? { ...p, lastContact: todayStr, contactHistory: [{ date: todayStr, note }, ...p.contactHistory] }
-        : p
-    ),
+    persons: state.persons.map((p) => {
+      if (p.id !== id) return p;
+      // Zelfde dag nogmaals klikken levert geen dubbele geschiedenis op.
+      if (p.contactHistory[0]?.date === todayStr) return { ...p, lastContact: todayStr };
+      return { ...p, lastContact: todayStr, contactHistory: [{ date: todayStr, note }, ...p.contactHistory] };
+    }),
+  };
+}
+
+// Verwijdert één geschiedenis-item; lastContact volgt het nieuwste overgebleven
+// item (of wordt null als er niets meer over is).
+export function removeContactEntry(state, id, index) {
+  return {
+    ...state,
+    persons: state.persons.map((p) => {
+      if (p.id !== id) return p;
+      if (!Number.isInteger(index) || index < 0 || index >= p.contactHistory.length) return p;
+      const contactHistory = p.contactHistory.filter((_, i) => i !== index);
+      return { ...p, contactHistory, lastContact: contactHistory[0]?.date ?? null };
+    }),
   };
 }
 
