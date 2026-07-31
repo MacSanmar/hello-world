@@ -1,9 +1,10 @@
 // Opslaglaag: dun wrappertje om localStorage (of een fallback) heen.
 // De backend is injecteerbaar zodat tests een in-memory variant gebruiken.
 
-import { emptyState, migrate } from "./logic.js";
+import { emptyState, normalizeState } from "./logic.js";
 
 const DATA_KEY = "stayintouch.v1";
+const RESCUE_KEY = "stayintouch.v1.corrupt";
 const THEME_KEY = "stayintouch.theme";
 const PROBE_KEY = "stayintouch.probe";
 
@@ -32,17 +33,35 @@ export function createStorage(backend) {
       }
     },
 
-    // Gooit nooit: ontbrekende, corrupte of niet-ondersteunde data levert
-    // een verse lege state op.
+    // Gooit nooit: ontbrekende, corrupte of niet-ondersteunde data levert een
+    // verse lege state op. Onleesbare data wordt eerst onder een reservesleutel
+    // bewaard, zodat een latere save() het origineel niet stilletjes vernietigt.
     load() {
+      let raw = null;
       try {
-        const raw = backend.getItem(DATA_KEY);
+        raw = backend.getItem(DATA_KEY);
         if (raw == null) return emptyState();
-        const state = migrate(JSON.parse(raw));
-        if (!state || !Array.isArray(state.persons)) return emptyState();
-        return state;
+        const state = normalizeState(JSON.parse(raw));
+        if (state) return state;
       } catch {
-        return emptyState();
+        // valt door naar de reservekopie hieronder
+      }
+      try {
+        if (raw != null && backend.getItem(RESCUE_KEY) == null) {
+          backend.setItem(RESCUE_KEY, raw);
+        }
+      } catch {
+        // reservekopie is nice-to-have
+      }
+      return emptyState();
+    },
+
+    // Is er bij een eerdere load() onleesbare data veiliggesteld?
+    hasRescue() {
+      try {
+        return backend.getItem(RESCUE_KEY) != null;
+      } catch {
+        return false;
       }
     },
 

@@ -22,6 +22,9 @@ export function parseISODate(str) {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  // Jaren < 1900 afwijzen: Date.UTC remapt 0-99 naar 1900-1999, en datums
+  // vóór 1900 zijn in deze app nooit legitiem.
+  if (year < 1900) return null;
   if (month < 1 || month > 12) return null;
   if (day < 1 || day > daysInMonth(year, month)) return null;
   return { year, month, day };
@@ -83,8 +86,10 @@ export const RELATIONSHIPS = {
 // laatste contactdatum. Een lastContact in de toekomst (mogelijk via import)
 // wordt op vandaag geklemd.
 export function computeStatus(person, todayStr) {
+  if (!Object.hasOwn(FREQUENCIES, person.frequency)) {
+    throw new TypeError(`Onbekende frequentie: ${person.frequency}`);
+  }
   const freq = FREQUENCIES[person.frequency];
-  if (!freq) throw new TypeError(`Onbekende frequentie: ${person.frequency}`);
 
   if (person.lastContact == null) {
     return { status: "never", dueDate: null, daysOverdue: 0, daysUntilDue: 0, daysSinceContact: null };
@@ -148,8 +153,11 @@ export function formatBirthday(mmdd) {
 export function initials(name) {
   const words = String(name).trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "?";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
+  // Per codepoint (niet per code unit) zodat emoji niet in surrogaathelften
+  // breken; zero-width joiners tellen niet mee.
+  const chars = (word) => [...word].filter((ch) => ch !== "\u200d");
+  if (words.length === 1) return chars(words[0]).slice(0, 2).join("").toUpperCase();
+  return (chars(words[0])[0] + chars(words[1])[0]).toUpperCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +275,10 @@ export function newPerson(fields = {}, todayStr) {
   if (!name) throw new TypeError("Naam is verplicht.");
 
   const relationship = fields.relationship ?? "other";
-  if (!(relationship in RELATIONSHIPS)) throw new TypeError(`Onbekende relatie: ${relationship}`);
+  if (!Object.hasOwn(RELATIONSHIPS, relationship)) throw new TypeError(`Onbekende relatie: ${relationship}`);
 
   const frequency = fields.frequency ?? "monthly";
-  if (!(frequency in FREQUENCIES)) throw new TypeError(`Onbekende frequentie: ${frequency}`);
+  if (!Object.hasOwn(FREQUENCIES, frequency)) throw new TypeError(`Onbekende frequentie: ${frequency}`);
 
   const lastContact = fields.lastContact ?? null;
   if (lastContact !== null && !isValidISODate(lastContact)) {
@@ -290,7 +298,8 @@ export function newPerson(fields = {}, todayStr) {
     lastContact,
     birthday,
     notes: typeof fields.notes === "string" ? fields.notes : "",
-    contactHistory: [],
+    // Invariant: lastContact is altijd de nieuwste datum in contactHistory.
+    contactHistory: lastContact ? [{ date: lastContact, note: "" }] : [],
     createdAt: todayStr,
   };
 }
@@ -312,25 +321,45 @@ export function markContacted(state, id, todayStr, note = "") {
     ...state,
     persons: state.persons.map((p) => {
       if (p.id !== id) return p;
-      // Zelfde dag nogmaals klikken levert geen dubbele geschiedenis op.
-      if (p.contactHistory[0]?.date === todayStr) return { ...p, lastContact: todayStr };
+      // Zelfde dag nogmaals klikken levert geen dubbele geschiedenis op
+      // (volgorde-onafhankelijk: geïmporteerde data kan ongesorteerd zijn).
+      if (p.contactHistory.some((e) => e.date === todayStr)) return { ...p, lastContact: todayStr };
       return { ...p, lastContact: todayStr, contactHistory: [{ date: todayStr, note }, ...p.contactHistory] };
     }),
   };
 }
 
-// Verwijdert één geschiedenis-item; lastContact volgt het nieuwste overgebleven
-// item (of wordt null als er niets meer over is).
+// Verwijdert één geschiedenis-item. lastContact wordt de nieuwste overgebleven
+// datum; een bestaande lastContact die nieuwer is dan de geschiedenis (en niet
+// zelf verwijderd wordt) blijft behouden.
 export function removeContactEntry(state, id, index) {
   return {
     ...state,
     persons: state.persons.map((p) => {
       if (p.id !== id) return p;
       if (!Number.isInteger(index) || index < 0 || index >= p.contactHistory.length) return p;
+      const removedDate = p.contactHistory[index].date;
       const contactHistory = p.contactHistory.filter((_, i) => i !== index);
-      return { ...p, contactHistory, lastContact: contactHistory[0]?.date ?? null };
+      const candidates = contactHistory.map((e) => e.date);
+      if (p.lastContact != null && p.lastContact !== removedDate) candidates.push(p.lastContact);
+      const lastContact = candidates.length ? candidates.reduce((a, b) => (a > b ? a : b)) : null;
+      return { ...p, contactHistory, lastContact };
     }),
   };
+}
+
+// Zet de laatste-contactdatum vanuit het formulier en bewaakt de invariant
+// dat lastContact altijd de nieuwste datum in contactHistory is: een
+// ontbrekend geschiedenis-item wordt toegevoegd, en de nieuwste datum wint.
+export function withLastContact(person, dateOrNull) {
+  let contactHistory = person.contactHistory;
+  if (dateOrNull != null && !contactHistory.some((e) => e.date === dateOrNull)) {
+    contactHistory = sortHistoryDesc([{ date: dateOrNull, note: "" }, ...contactHistory]);
+  }
+  const lastContact = contactHistory.length
+    ? contactHistory.map((e) => e.date).reduce((a, b) => (a > b ? a : b))
+    : null;
+  return { ...person, contactHistory, lastContact };
 }
 
 // ---------------------------------------------------------------------------
@@ -348,11 +377,17 @@ export function migrate(rawState) {
   return null;
 }
 
+function sortHistoryDesc(history) {
+  return [...history].sort((a, b) => b.date.localeCompare(a.date));
+}
+
 function sanitizeHistory(rawHistory) {
   if (!Array.isArray(rawHistory)) return [];
-  return rawHistory
-    .filter((e) => typeof e === "object" && e !== null && isValidISODate(e.date))
-    .map((e) => ({ date: e.date, note: typeof e.note === "string" ? e.note : "" }));
+  return sortHistoryDesc(
+    rawHistory
+      .filter((e) => typeof e === "object" && e !== null && isValidISODate(e.date))
+      .map((e) => ({ date: e.date, note: typeof e.note === "string" ? e.note : "" }))
+  );
 }
 
 export function validateImport(jsonString) {
@@ -390,10 +425,10 @@ export function validateImport(jsonString) {
     seenIds.add(id);
 
     const relationship = p.relationship ?? "other";
-    if (!(relationship in RELATIONSHIPS)) errors.push(`${label} ('${name}'): onbekende relatie '${p.relationship}'.`);
+    if (!Object.hasOwn(RELATIONSHIPS, relationship)) errors.push(`${label} ('${name}'): onbekende relatie '${p.relationship}'.`);
 
     const frequency = p.frequency ?? "monthly";
-    if (!(frequency in FREQUENCIES)) errors.push(`${label} ('${name}'): onbekende frequentie '${p.frequency}'.`);
+    if (!Object.hasOwn(FREQUENCIES, frequency)) errors.push(`${label} ('${name}'): onbekende frequentie '${p.frequency}'.`);
 
     const lastContact = p.lastContact ?? null;
     if (lastContact !== null && !isValidISODate(lastContact)) {
@@ -405,7 +440,7 @@ export function validateImport(jsonString) {
       errors.push(`${label} ('${name}'): ongeldige verjaardag '${p.birthday}'.`);
     }
 
-    persons.push({
+    const base = {
       id,
       name,
       relationship,
@@ -415,9 +450,56 @@ export function validateImport(jsonString) {
       notes: typeof p.notes === "string" ? p.notes : "",
       contactHistory: sanitizeHistory(p.contactHistory),
       createdAt: isValidISODate(p.createdAt) ? p.createdAt : null,
-    });
+    };
+    // Invariant herstellen: geschiedenis nieuwste-eerst en lastContact
+    // gelijk aan de nieuwste datum (seed indien nodig).
+    persons.push(withLastContact(base, isValidISODate(lastContact) ? lastContact : null));
   });
 
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, state: { schemaVersion: 1, persons } };
+}
+
+// Coulante variant voor het laden uit opslag: repareert wat kan en laat
+// onbruikbare records vallen in plaats van te falen — de app mag bij het
+// opstarten nooit crashen op (verouderde of gemanipuleerde) opslag.
+export function normalizeState(rawState) {
+  const migrated = migrate(rawState);
+  if (!migrated || !Array.isArray(migrated.persons)) return null;
+
+  const persons = [];
+  const seenIds = new Set();
+  for (const p of migrated.persons) {
+    if (typeof p !== "object" || p === null) continue;
+    const name =
+      typeof p.name === "string"
+        ? p.name.trim()
+        : typeof p.name === "number" || typeof p.name === "boolean"
+          ? String(p.name)
+          : "";
+    if (!name) continue;
+
+    let id = typeof p.id === "string" && p.id.length > 0 ? p.id : crypto.randomUUID();
+    if (seenIds.has(id)) id = crypto.randomUUID();
+    seenIds.add(id);
+
+    const lastContact = isValidISODate(p.lastContact) ? p.lastContact : null;
+    persons.push(
+      withLastContact(
+        {
+          id,
+          name,
+          relationship: Object.hasOwn(RELATIONSHIPS, p.relationship) ? p.relationship : "other",
+          frequency: Object.hasOwn(FREQUENCIES, p.frequency) ? p.frequency : "monthly",
+          lastContact,
+          birthday: isValidBirthday(p.birthday) ? p.birthday : null,
+          notes: typeof p.notes === "string" ? p.notes : "",
+          contactHistory: sanitizeHistory(p.contactHistory),
+          createdAt: isValidISODate(p.createdAt) ? p.createdAt : null,
+        },
+        lastContact
+      )
+    );
+  }
+  return { schemaVersion: 1, persons };
 }

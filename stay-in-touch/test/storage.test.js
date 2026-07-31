@@ -15,7 +15,7 @@ const STATE = {
       lastContact: "2026-07-01",
       birthday: null,
       notes: "",
-      contactHistory: [],
+      contactHistory: [{ date: "2026-07-01", note: "" }],
       createdAt: "2026-01-01",
     },
   ],
@@ -73,5 +73,59 @@ describe("createStorage", () => {
     const backend = memoryBackend();
     backend.setItem("stayintouch.theme", "paars");
     assert.equal(createStorage(backend).loadTheme(), null);
+  });
+});
+
+describe("createStorage (review-regressies)", () => {
+  it("recovers from schemaVersion 1 with a non-array persons", () => {
+    const backend = memoryBackend();
+    backend.setItem("stayintouch.v1", JSON.stringify({ schemaVersion: 1, persons: "nee" }));
+    assert.deepEqual(createStorage(backend).load(), emptyState());
+  });
+
+  it("normalizes malformed persons instead of passing them through", () => {
+    const backend = memoryBackend();
+    backend.setItem(
+      "stayintouch.v1",
+      JSON.stringify({ schemaVersion: 1, persons: [{ id: "a", name: 5, frequency: "daily" }, null, { id: "b", name: "Echt" }] })
+    );
+    const state = createStorage(backend).load();
+    assert.equal(state.persons.length, 2);
+    assert.equal(state.persons[0].name, "5");
+    assert.equal(state.persons[0].frequency, "monthly");
+    assert.equal(state.persons[1].name, "Echt");
+  });
+
+  it("preserves unreadable data under a rescue key instead of silently losing it", () => {
+    const backend = memoryBackend();
+    backend.setItem("stayintouch.v1", "{kapot!!");
+    const storage = createStorage(backend);
+    assert.equal(storage.hasRescue(), false);
+    assert.deepEqual(storage.load(), emptyState());
+    assert.equal(backend.getItem("stayintouch.v1.corrupt"), "{kapot!!");
+    assert.equal(storage.hasRescue(), true);
+    // een latere save() overschrijft de reservekopie niet
+    storage.save({ schemaVersion: 1, persons: [] });
+    assert.equal(backend.getItem("stayintouch.v1.corrupt"), "{kapot!!");
+  });
+
+  it("does not create a rescue copy when nothing was stored", () => {
+    const backend = memoryBackend();
+    const storage = createStorage(backend);
+    storage.load();
+    assert.equal(backend.getItem("stayintouch.v1.corrupt"), null);
+    assert.equal(storage.hasRescue(), false);
+  });
+});
+
+describe("detectBackend", () => {
+  it("falls back to a working in-memory backend without localStorage", async () => {
+    const { detectBackend } = await import("../js/storage.js");
+    const { backend, persistent } = detectBackend(); // Node heeft geen localStorage
+    assert.equal(persistent, false);
+    backend.setItem("k", "v");
+    assert.equal(backend.getItem("k"), "v");
+    backend.removeItem("k");
+    assert.equal(backend.getItem("k"), null);
   });
 });

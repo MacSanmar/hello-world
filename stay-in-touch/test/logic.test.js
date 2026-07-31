@@ -26,6 +26,8 @@ import {
   removePerson,
   markContacted,
   removeContactEntry,
+  withLastContact,
+  normalizeState,
   migrate,
   serialize,
   validateImport,
@@ -604,5 +606,164 @@ describe("removeContactEntry", () => {
     assert.deepEqual(removeContactEntry(state, "zzz", 0), state);
     assert.deepEqual(removeContactEntry(state, "a", 99), state);
     assert.deepEqual(removeContactEntry(state, "a", -1), state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressietests n.a.v. adversariële review
+// ---------------------------------------------------------------------------
+
+describe("parseISODate (review: Date.UTC jaar 0-99)", () => {
+  it("rejects years before 1900 so validation matches epoch math", () => {
+    assert.equal(parseISODate("0026-07-31"), null);
+    assert.equal(parseISODate("0099-12-31"), null);
+    assert.equal(parseISODate("0000-02-29"), null);
+    assert.notEqual(parseISODate("1900-01-01"), null);
+  });
+});
+
+describe("enum validation (review: prototype keys via 'in')", () => {
+  it("rejects Object.prototype keys as frequency/relationship", () => {
+    assert.throws(() => newPerson({ name: "X", frequency: "constructor" }, TODAY), /frequentie/i);
+    assert.throws(() => newPerson({ name: "X", relationship: "toString" }, TODAY), /relatie/i);
+    assert.throws(() => newPerson({ name: "X", frequency: "__proto__" }, TODAY), /frequentie/i);
+    const result = validateImport(JSON.stringify({ schemaVersion: 1, persons: [{ id: "x", name: "A", relationship: "toString", frequency: "__proto__" }] }));
+    assert.equal(result.ok, false);
+    assert.throws(() => computeStatus(person({ frequency: "constructor", lastContact: TODAY }), TODAY), TypeError);
+  });
+});
+
+describe("initials (review: surrogate pairs en diakrieten)", () => {
+  it("keeps astral-plane characters intact", () => {
+    assert.equal(initials("🌟 Kim"), "🌟K");
+    assert.equal(initials("👨‍👩‍👧"), "👨👩"); // enkel woord: eerste twee codepoints (ZWJ weggefilterd)
+    assert.equal(initials("Élise Örn"), "ÉÖ");
+  });
+});
+
+describe("formatDue (review: grens 2 dagen)", () => {
+  it("uses 'over 2 dagen' right after 'morgen'", () => {
+    assert.equal(formatDue(2), "over 2 dagen");
+  });
+});
+
+describe("nextBirthdayOverall (review: tie-break)", () => {
+  it("breaks equal-day ties alphabetically regardless of array order", () => {
+    const zoe = person({ id: "z", name: "Zoë", birthday: "08-11" });
+    const anna = person({ id: "a", name: "Anna", birthday: "08-11" });
+    assert.equal(nextBirthdayOverall([zoe, anna], TODAY).person.name, "Anna");
+    assert.equal(nextBirthdayOverall([anna, zoe], TODAY).person.name, "Anna");
+  });
+});
+
+describe("newPerson (review: lastContact zonder geschiedenis)", () => {
+  it("seeds contactHistory with a matching entry when lastContact is set", () => {
+    const p = newPerson({ name: "X", lastContact: "2026-07-25" }, TODAY);
+    assert.deepEqual(p.contactHistory, [{ date: "2026-07-25", note: "" }]);
+  });
+});
+
+describe("withLastContact", () => {
+  it("sets the date and inserts a matching history entry in descending order", () => {
+    const p = person({ id: "a", lastContact: "2026-07-20", contactHistory: [{ date: "2026-07-20", note: "x" }] });
+    const next = withLastContact(p, "2026-07-25");
+    assert.equal(next.lastContact, "2026-07-25");
+    assert.deepEqual(next.contactHistory.map((e) => e.date), ["2026-07-25", "2026-07-20"]);
+  });
+
+  it("keeps the newest history date as lastContact when the form date is older", () => {
+    const p = person({ id: "a", lastContact: "2026-07-20", contactHistory: [{ date: "2026-07-20", note: "" }] });
+    const next = withLastContact(p, "2026-06-01");
+    assert.equal(next.lastContact, "2026-07-20");
+    assert.deepEqual(next.contactHistory.map((e) => e.date), ["2026-07-20", "2026-06-01"]);
+  });
+
+  it("falls back to the newest history entry when the date is cleared", () => {
+    const p = person({ id: "a", lastContact: "2026-07-20", contactHistory: [{ date: "2026-07-20", note: "" }] });
+    assert.equal(withLastContact(p, null).lastContact, "2026-07-20");
+    assert.equal(withLastContact(person({ id: "b" }), null).lastContact, null);
+  });
+
+  it("does not duplicate an existing entry for the same date", () => {
+    const p = person({ id: "a", lastContact: "2026-07-20", contactHistory: [{ date: "2026-07-20", note: "x" }] });
+    assert.equal(withLastContact(p, "2026-07-20").contactHistory.length, 1);
+  });
+});
+
+describe("markContacted (review: ongeordende geschiedenis)", () => {
+  it("same-day guard is order-independent", () => {
+    const p = person({ id: "a", lastContact: "2026-01-01", contactHistory: [{ date: "2026-01-01", note: "" }, { date: TODAY, note: "" }] });
+    const next = markContacted({ schemaVersion: 1, persons: [p] }, "a", TODAY);
+    assert.equal(next.persons[0].contactHistory.filter((e) => e.date === TODAY).length, 1);
+  });
+});
+
+describe("removeContactEntry (review: form-set lastContact en volgorde)", () => {
+  it("uses the maximum remaining date, not merely index 0", () => {
+    const p = person({
+      id: "a",
+      lastContact: "2026-07-30",
+      contactHistory: [
+        { date: "2026-01-01", note: "" },
+        { date: "2026-06-01", note: "" },
+        { date: "2026-07-30", note: "" },
+      ],
+    });
+    const next = removeContactEntry({ schemaVersion: 1, persons: [p] }, "a", 2);
+    assert.equal(next.persons[0].lastContact, "2026-06-01");
+  });
+
+  it("preserves a lastContact that is newer than any history entry", () => {
+    const p = person({ id: "a", lastContact: "2026-07-25", contactHistory: [{ date: "2026-07-20", note: "" }] });
+    const next = removeContactEntry({ schemaVersion: 1, persons: [p] }, "a", 0);
+    assert.equal(next.persons[0].lastContact, "2026-07-25");
+    assert.deepEqual(next.persons[0].contactHistory, []);
+  });
+});
+
+describe("validateImport (review: normalisatie geschiedenis en lastContact)", () => {
+  it("sorts imported history newest-first", () => {
+    const raw = { schemaVersion: 1, persons: [{ id: "a", name: "A", lastContact: "2026-07-30", contactHistory: [{ date: "2026-01-01", note: "" }, { date: "2026-07-30", note: "" }, { date: "2026-06-01", note: "" }] }] };
+    const result = validateImport(JSON.stringify(raw));
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.state.persons[0].contactHistory.map((e) => e.date), ["2026-07-30", "2026-06-01", "2026-01-01"]);
+  });
+
+  it("reconciles lastContact with the history (newest wins, seeds missing entry)", () => {
+    const newerHistory = validateImport(JSON.stringify({ schemaVersion: 1, persons: [{ id: "a", name: "A", lastContact: "2026-01-01", contactHistory: [{ date: "2026-07-30", note: "" }] }] }));
+    assert.equal(newerHistory.state.persons[0].lastContact, "2026-07-30");
+    assert.deepEqual(newerHistory.state.persons[0].contactHistory.map((e) => e.date), ["2026-07-30", "2026-01-01"]);
+
+    const noHistory = validateImport(JSON.stringify({ schemaVersion: 1, persons: [{ id: "a", name: "A", lastContact: "2026-07-30" }] }));
+    assert.deepEqual(noHistory.state.persons[0].contactHistory, [{ date: "2026-07-30", note: "" }]);
+  });
+});
+
+describe("normalizeState (review: opslag mag nooit crashen)", () => {
+  it("coerces primitive names and drops unusable persons", () => {
+    const state = normalizeState({
+      schemaVersion: 1,
+      persons: [
+        { id: "a", name: 5, frequency: "daily", relationship: "vijand", lastContact: "kapot", birthday: "13-40" },
+        null,
+        { id: "b" },
+        { id: "c", name: "Echt", frequency: "weekly", extra: "weg" },
+      ],
+    });
+    assert.equal(state.persons.length, 2);
+    const [a, c] = state.persons;
+    assert.equal(a.name, "5");
+    assert.equal(a.frequency, "monthly");
+    assert.equal(a.relationship, "other");
+    assert.equal(a.lastContact, null);
+    assert.equal(a.birthday, null);
+    assert.equal(c.frequency, "weekly");
+    assert.equal("extra" in c, false);
+  });
+
+  it("returns null for unusable roots", () => {
+    assert.equal(normalizeState(null), null);
+    assert.equal(normalizeState({ schemaVersion: 99 }), null);
+    assert.equal(normalizeState({ schemaVersion: 1, persons: "nee" }), null);
   });
 });
