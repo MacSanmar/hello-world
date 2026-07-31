@@ -75,6 +75,10 @@ await evaluate(`
 await sleep(200);
 
 await check("kaart verschijnt na toevoegen", `document.querySelectorAll(".card").length === 1`);
+await check("lege staat is echt onzichtbaar met personen (computed style)", `
+  getComputedStyle(document.querySelector("#empty-state")).display === "none"
+  && getComputedStyle(document.querySelector("#no-results")).display === "none"
+`);
 await check("naam wordt als tekst gerenderd (geen XSS)", `
   document.querySelector(".card .name").textContent === ${JSON.stringify(XSS_NAME)}
   && document.querySelector(".card img") === null
@@ -82,7 +86,7 @@ await check("naam wordt als tekst gerenderd (geen XSS)", `
 `);
 await check("nieuwe persoon zonder contact is 'never' met gele badge", `
   document.querySelector(".card").classList.contains("status-never")
-  && document.querySelector(".card .badge").textContent === "Nieuw"
+  && document.querySelector(".card .badge").textContent === "Binnenkort"
 `);
 await check("statistieken tellen 1 actief / 1 binnenkort", `
   document.querySelector("#stat-tracking").textContent === "1"

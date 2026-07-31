@@ -116,7 +116,7 @@ function demoState() {
 // Renderen
 // ---------------------------------------------------------------------------
 
-const BADGE_LABELS = { overdue: "Achterstallig", "due-soon": "Binnenkort", ok: "Op schema", never: "Nieuw" };
+const BADGE_LABELS = { overdue: "Achterstallig", "due-soon": "Binnenkort", ok: "Op schema", never: "Binnenkort" };
 
 function statusLine(status) {
   switch (status.status) {
@@ -150,7 +150,7 @@ function renderCard(person, today) {
       : `Laatst gesproken: ${L.formatAgo(status.daysSinceContact)} · ${freqLabel}`;
 
   const actions = el("div", { class: "card-actions" });
-  if (status.status !== "ok") {
+  if (person.lastContact !== today) {
     actions.append(el("button", { class: "btn small", type: "button", "data-action": "contacted" }, "✓ Vandaag gesproken"));
   }
   actions.append(el("button", { class: "btn small", type: "button", "data-action": "edit" }, "Bewerken"));
@@ -169,7 +169,7 @@ function renderCard(person, today) {
           {},
           el("span", { class: "history-date" }, formatDateNL(entry.date)),
           el("span", { class: "history-note" }, entry.note),
-          el("button", { class: "del-history", type: "button", "data-action": "del-history", "data-index": String(index), title: "Contactmoment verwijderen" }, "✕")
+          el("button", { class: "del-history", type: "button", "data-action": "del-history", "data-index": String(index), title: "Contactmoment verwijderen", "aria-label": `Contactmoment van ${formatDateNL(entry.date)} verwijderen` }, "✕")
         )
       );
     });
@@ -189,7 +189,14 @@ function renderCard(person, today) {
       el("span", { class: `badge ${status.status}` }, BADGE_LABELS[status.status]),
       el(
         "button",
-        { class: "btn icon expand-btn", type: "button", "data-action": "toggle-details", "aria-expanded": String(isExpanded), title: "Details" },
+        {
+          class: "btn icon expand-btn",
+          type: "button",
+          "data-action": "toggle-details",
+          "aria-expanded": String(isExpanded),
+          "aria-label": isExpanded ? "Details verbergen" : "Details tonen",
+          title: "Details",
+        },
         "▾"
       )
     ),
@@ -215,7 +222,27 @@ function render() {
 
   const visible = L.sortByUrgency(L.filterPersons(state.persons, filter, today), today);
   const list = $("#person-list");
+
+  // Focus overleeft de rebuild: onthoud kaart + actie en herstel na render.
+  const active = document.activeElement;
+  const focusMemo =
+    active instanceof HTMLElement && list.contains(active)
+      ? { id: active.closest(".card")?.dataset.id, action: active.dataset.action ?? null }
+      : null;
+
   list.replaceChildren(...visible.map((p) => renderCard(p, today)));
+
+  if (focusMemo?.id) {
+    const card = list.querySelector(`.card[data-id="${CSS.escape(focusMemo.id)}"]`);
+    if (card) {
+      const target =
+        (focusMemo.action && card.querySelector(`[data-action="${CSS.escape(focusMemo.action)}"]`)) ||
+        card.querySelector('[data-action="edit"]') ||
+        card;
+      if (target === card) card.tabIndex = -1;
+      target.focus();
+    }
+  }
 
   $("#empty-state").hidden = state.persons.length > 0;
   $("#no-results").hidden = state.persons.length === 0 || visible.length > 0;
@@ -297,7 +324,10 @@ function handleFormSubmit(event) {
   if (editingId !== null) {
     const existing = state.persons.find((p) => p.id === editingId);
     if (existing) {
-      validated = { ...validated, id: existing.id, createdAt: existing.createdAt, contactHistory: existing.contactHistory };
+      validated = L.withLastContact(
+        { ...validated, id: existing.id, createdAt: existing.createdAt, contactHistory: existing.contactHistory },
+        validated.lastContact
+      );
     }
   }
 
@@ -336,6 +366,10 @@ function handleExport() {
 }
 
 async function handleImportFile(file) {
+  if (file.size > 5 * 1024 * 1024) {
+    await confirmDialog(el("p", {}, "Dit bestand is te groot voor een back-up (max 5 MB)."), { okOnly: true });
+    return;
+  }
   const text = await file.text();
   const result = L.validateImport(text);
 
@@ -376,6 +410,7 @@ function applyTheme(theme) {
   const button = $("#theme-toggle");
   button.textContent = THEME_ICONS[theme ?? "system"];
   button.title = `Thema: ${THEME_LABELS[theme ?? "system"]} (klik om te wisselen)`;
+  button.setAttribute("aria-label", `Thema wisselen (nu: ${THEME_LABELS[theme ?? "system"]})`);
 }
 
 function cycleTheme() {
@@ -470,6 +505,7 @@ function wireEvents() {
 // ---------------------------------------------------------------------------
 
 $("#storage-banner").hidden = DEMO || persistent;
+$("#rescue-banner").hidden = DEMO || !storage.hasRescue();
 $("#demo-banner").hidden = !DEMO;
 applyTheme(document.documentElement.dataset.theme ?? null);
 fillFormSelects();
