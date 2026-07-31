@@ -151,3 +151,92 @@ export function initials(name) {
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
   return (words[0][0] + words[1][0]).toUpperCase();
 }
+
+// ---------------------------------------------------------------------------
+// Verjaardagen
+// ---------------------------------------------------------------------------
+
+// Volgende verjaardag vanaf vandaag (inclusief vandaag zelf).
+// 29 februari wordt in niet-schrikkeljaren op 28 februari gevierd.
+export function nextBirthday(mmdd, todayStr) {
+  if (mmdd == null) return null;
+  const [mm, dd] = String(mmdd).split("-").map(Number);
+  const today = parseISODate(todayStr);
+  if (!today) throw new TypeError(`Ongeldige datum: ${todayStr}`);
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const observed = (year) => {
+    const day = mm === 2 && dd === 29 && !isLeapYear(year) ? 28 : dd;
+    return `${year}-${pad(mm)}-${pad(day)}`;
+  };
+
+  let candidate = observed(today.year);
+  if (diffDays(todayStr, candidate) < 0) candidate = observed(today.year + 1);
+  return { date: candidate, daysUntil: diffDays(todayStr, candidate) };
+}
+
+export function nextBirthdayOverall(persons, todayStr) {
+  let best = null;
+  for (const p of persons) {
+    const next = nextBirthday(p.birthday, todayStr);
+    if (!next) continue;
+    if (
+      best === null ||
+      next.daysUntil < best.daysUntil ||
+      (next.daysUntil === best.daysUntil && p.name.localeCompare(best.person.name, "nl") < 0)
+    ) {
+      best = { person: p, daysUntil: next.daysUntil };
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Sorteren, filteren, statistieken
+// ---------------------------------------------------------------------------
+
+const STATUS_RANK = { overdue: 0, never: 1, "due-soon": 2, ok: 3 };
+
+// Meest urgente eerst: achterstallig (meeste dagen eerst), dan nog-nooit,
+// dan binnenkort (dichtstbij eerst), dan op schema. Gelijkspel op naam.
+export function sortByUrgency(persons, todayStr) {
+  return persons
+    .map((p) => ({ p, s: computeStatus(p, todayStr) }))
+    .sort((a, b) => {
+      const byRank = STATUS_RANK[a.s.status] - STATUS_RANK[b.s.status];
+      if (byRank !== 0) return byRank;
+      if (a.s.status === "overdue" && a.s.daysOverdue !== b.s.daysOverdue) {
+        return b.s.daysOverdue - a.s.daysOverdue;
+      }
+      if (a.s.daysUntilDue !== b.s.daysUntilDue) return a.s.daysUntilDue - b.s.daysUntilDue;
+      return a.p.name.localeCompare(b.p.name, "nl");
+    })
+    .map((x) => x.p);
+}
+
+// status: "all" | "overdue" | "due-soon" | "ok" — "never" telt als due-soon.
+export function filterPersons(persons, { query = "", status = "all" } = {}, todayStr) {
+  const q = String(query).trim().toLowerCase();
+  return persons.filter((p) => {
+    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (status === "all") return true;
+    const s = computeStatus(p, todayStr).status;
+    return (s === "never" ? "due-soon" : s) === status;
+  });
+}
+
+export function computeStats(persons, todayStr) {
+  let overdue = 0;
+  let dueSoon = 0;
+  for (const p of persons) {
+    const s = computeStatus(p, todayStr).status;
+    if (s === "overdue") overdue += 1;
+    else if (s === "due-soon" || s === "never") dueSoon += 1;
+  }
+  return {
+    tracking: persons.length,
+    overdue,
+    dueSoon,
+    nextBirthday: nextBirthdayOverall(persons, todayStr),
+  };
+}

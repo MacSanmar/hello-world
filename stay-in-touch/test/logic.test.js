@@ -15,6 +15,11 @@ import {
   formatAgo,
   formatBirthday,
   initials,
+  nextBirthday,
+  nextBirthdayOverall,
+  sortByUrgency,
+  filterPersons,
+  computeStats,
 } from "../js/logic.js";
 
 const TODAY = "2026-07-31";
@@ -247,5 +252,130 @@ describe("initials", () => {
     assert.equal(initials("  oom   david  "), "OD");
     assert.equal(initials("X"), "X");
     assert.equal(initials("Jan van Dijk"), "JV");
+  });
+});
+
+describe("nextBirthday", () => {
+  it("returns this year's date when still ahead", () => {
+    assert.deepEqual(nextBirthday("08-11", TODAY), { date: "2026-08-11", daysUntil: 11 });
+  });
+
+  it("returns today with 0 days on the birthday itself", () => {
+    assert.deepEqual(nextBirthday("07-31", TODAY), { date: "2026-07-31", daysUntil: 0 });
+  });
+
+  it("rolls over to next year when already passed", () => {
+    assert.deepEqual(nextBirthday("06-18", TODAY), { date: "2027-06-18", daysUntil: 322 });
+  });
+
+  it("crosses the new-year boundary", () => {
+    assert.deepEqual(nextBirthday("01-01", "2026-12-31"), { date: "2027-01-01", daysUntil: 1 });
+  });
+
+  it("observes 29 Feb on 28 Feb in non-leap years", () => {
+    assert.deepEqual(nextBirthday("02-29", "2026-01-15"), { date: "2026-02-28", daysUntil: 44 });
+  });
+
+  it("uses the real 29 Feb in leap years", () => {
+    assert.deepEqual(nextBirthday("02-29", "2028-02-01"), { date: "2028-02-29", daysUntil: 28 });
+  });
+
+  it("rolls a passed 29 Feb into the next year's observed date", () => {
+    assert.deepEqual(nextBirthday("02-29", "2027-03-01"), { date: "2028-02-29", daysUntil: 365 });
+  });
+
+  it("returns null without a birthday", () => {
+    assert.equal(nextBirthday(null, TODAY), null);
+  });
+});
+
+describe("nextBirthdayOverall", () => {
+  it("picks the person whose birthday comes first", () => {
+    const mama = person({ id: "m", name: "Mama", birthday: "08-11" });
+    const other = person({ id: "o", name: "Oom David", birthday: "10-02" });
+    const none = person({ id: "n", name: "Niemand", birthday: null });
+    const result = nextBirthdayOverall([none, other, mama], TODAY);
+    assert.equal(result.person.name, "Mama");
+    assert.equal(result.daysUntil, 11);
+  });
+
+  it("returns null when nobody has a birthday", () => {
+    assert.equal(nextBirthdayOverall([person({ birthday: null })], TODAY), null);
+    assert.equal(nextBirthdayOverall([], TODAY), null);
+  });
+});
+
+describe("sortByUrgency", () => {
+  // mockup cast, computed relative to TODAY
+  const sarah = person({ id: "s", name: "Sarah K.", frequency: "monthly", lastContact: addDays(TODAY, -247) }); // 217d overdue
+  const oomDavid = person({ id: "d", name: "Oom David", frequency: "quarterly", lastContact: addDays(TODAY, -134) }); // 43d overdue
+  const nieuw = person({ id: "n", name: "Nieuw Persoon", lastContact: null }); // never
+  const marcus = person({ id: "w", name: "Marcus W.", frequency: "monthly", lastContact: addDays(TODAY, -23) }); // due in 7
+  const anna = person({ id: "a", name: "Anna", frequency: "weekly", lastContact: addDays(TODAY, -6) }); // due in 1
+  const mama = person({ id: "m", name: "Mama", frequency: "monthly", lastContact: addDays(TODAY, -10) }); // ok, due in 20
+
+  it("orders overdue desc, then never, then due-soon asc, then ok", () => {
+    const sorted = sortByUrgency([mama, marcus, anna, nieuw, oomDavid, sarah], TODAY);
+    assert.deepEqual(sorted.map((p) => p.id), ["s", "d", "n", "a", "w", "m"]);
+  });
+
+  it("breaks ties alphabetically (Dutch collation)", () => {
+    const b = person({ id: "b", name: "Bram", lastContact: addDays(TODAY, -247) });
+    const a = person({ id: "a2", name: "Anouk", lastContact: addDays(TODAY, -247) });
+    const sorted = sortByUrgency([b, a], TODAY);
+    assert.deepEqual(sorted.map((p) => p.name), ["Anouk", "Bram"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [mama, sarah];
+    sortByUrgency(input, TODAY);
+    assert.deepEqual(input.map((p) => p.id), ["m", "s"]);
+  });
+});
+
+describe("filterPersons", () => {
+  const sarah = person({ id: "s", name: "Sarah K.", lastContact: addDays(TODAY, -247) }); // overdue
+  const marcus = person({ id: "w", name: "Marcus W.", lastContact: addDays(TODAY, -23) }); // due-soon
+  const nieuw = person({ id: "n", name: "Nieuw", lastContact: null }); // never
+  const mama = person({ id: "m", name: "Mama", lastContact: addDays(TODAY, -10) }); // ok
+  const all = [sarah, marcus, nieuw, mama];
+
+  it("matches name substrings case-insensitively", () => {
+    assert.deepEqual(filterPersons(all, { query: "AR" }, TODAY).map((p) => p.id), ["s", "w"]);
+    assert.deepEqual(filterPersons(all, { query: "  mama " }, TODAY).map((p) => p.id), ["m"]);
+  });
+
+  it("filters by status, counting 'never' as due-soon", () => {
+    assert.deepEqual(filterPersons(all, { status: "overdue" }, TODAY).map((p) => p.id), ["s"]);
+    assert.deepEqual(filterPersons(all, { status: "due-soon" }, TODAY).map((p) => p.id), ["w", "n"]);
+    assert.deepEqual(filterPersons(all, { status: "ok" }, TODAY).map((p) => p.id), ["m"]);
+    assert.equal(filterPersons(all, { status: "all" }, TODAY).length, 4);
+    assert.equal(filterPersons(all, {}, TODAY).length, 4);
+  });
+
+  it("combines query and status", () => {
+    assert.deepEqual(filterPersons(all, { query: "a", status: "overdue" }, TODAY).map((p) => p.id), ["s"]);
+  });
+});
+
+describe("computeStats", () => {
+  it("counts tracking, overdue and due-soon (incl. never) and finds next birthday", () => {
+    const persons = [
+      person({ id: "s", name: "Sarah K.", lastContact: addDays(TODAY, -247) }), // overdue
+      person({ id: "d", name: "Oom David", frequency: "quarterly", lastContact: addDays(TODAY, -134) }), // overdue
+      person({ id: "w", name: "Marcus W.", lastContact: addDays(TODAY, -23) }), // due-soon
+      person({ id: "n", name: "Nieuw", lastContact: null }), // never -> due-soon
+      person({ id: "m", name: "Mama", lastContact: addDays(TODAY, -10), birthday: "08-11" }), // ok
+    ];
+    const stats = computeStats(persons, TODAY);
+    assert.equal(stats.tracking, 5);
+    assert.equal(stats.overdue, 2);
+    assert.equal(stats.dueSoon, 2);
+    assert.equal(stats.nextBirthday.person.name, "Mama");
+    assert.equal(stats.nextBirthday.daysUntil, 11);
+  });
+
+  it("handles an empty list", () => {
+    assert.deepEqual(computeStats([], TODAY), { tracking: 0, overdue: 0, dueSoon: 0, nextBirthday: null });
   });
 });
