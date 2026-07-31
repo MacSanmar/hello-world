@@ -240,3 +240,169 @@ export function computeStats(persons, todayStr) {
     nextBirthday: nextBirthdayOverall(persons, todayStr),
   };
 }
+
+// ---------------------------------------------------------------------------
+// State & mutaties (puur: input wordt nooit gemuteerd)
+// ---------------------------------------------------------------------------
+
+export function emptyState() {
+  return { schemaVersion: 1, persons: [] };
+}
+
+const BIRTHDAY_RE = /^(\d{2})-(\d{2})$/;
+
+// "MM-DD"; 29 feb is toegestaan (schrikkeljaar-referentie).
+function isValidBirthday(mmdd) {
+  if (typeof mmdd !== "string") return false;
+  const match = BIRTHDAY_RE.exec(mmdd);
+  if (!match) return false;
+  const mm = Number(match[1]);
+  const dd = Number(match[2]);
+  if (mm < 1 || mm > 12) return false;
+  return dd >= 1 && dd <= daysInMonth(2024, mm);
+}
+
+export function newPerson(fields = {}, todayStr) {
+  const name = typeof fields.name === "string" ? fields.name.trim() : "";
+  if (!name) throw new TypeError("Naam is verplicht.");
+
+  const relationship = fields.relationship ?? "other";
+  if (!(relationship in RELATIONSHIPS)) throw new TypeError(`Onbekende relatie: ${relationship}`);
+
+  const frequency = fields.frequency ?? "monthly";
+  if (!(frequency in FREQUENCIES)) throw new TypeError(`Onbekende frequentie: ${frequency}`);
+
+  const lastContact = fields.lastContact ?? null;
+  if (lastContact !== null && !isValidISODate(lastContact)) {
+    throw new TypeError(`Ongeldige datum: ${lastContact}`);
+  }
+
+  const birthday = fields.birthday ?? null;
+  if (birthday !== null && !isValidBirthday(birthday)) {
+    throw new TypeError(`Ongeldige verjaardag: ${birthday}`);
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    name,
+    relationship,
+    frequency,
+    lastContact,
+    birthday,
+    notes: typeof fields.notes === "string" ? fields.notes : "",
+    contactHistory: [],
+    createdAt: todayStr,
+  };
+}
+
+export function upsertPerson(state, person) {
+  const exists = state.persons.some((p) => p.id === person.id);
+  const persons = exists
+    ? state.persons.map((p) => (p.id === person.id ? person : p))
+    : [...state.persons, person];
+  return { ...state, persons };
+}
+
+export function removePerson(state, id) {
+  return { ...state, persons: state.persons.filter((p) => p.id !== id) };
+}
+
+export function markContacted(state, id, todayStr, note = "") {
+  return {
+    ...state,
+    persons: state.persons.map((p) =>
+      p.id === id
+        ? { ...p, lastContact: todayStr, contactHistory: [{ date: todayStr, note }, ...p.contactHistory] }
+        : p
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Import / export
+// ---------------------------------------------------------------------------
+
+export function serialize(state) {
+  return JSON.stringify(state, null, 2);
+}
+
+// Schakelt op schemaVersion; toekomstige versies krijgen hier een upgrade-stap.
+export function migrate(rawState) {
+  if (typeof rawState !== "object" || rawState === null || Array.isArray(rawState)) return null;
+  if (rawState.schemaVersion === 1) return rawState;
+  return null;
+}
+
+function sanitizeHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) return [];
+  return rawHistory
+    .filter((e) => typeof e === "object" && e !== null && isValidISODate(e.date))
+    .map((e) => ({ date: e.date, note: typeof e.note === "string" ? e.note : "" }));
+}
+
+export function validateImport(jsonString) {
+  let raw;
+  try {
+    raw = JSON.parse(jsonString);
+  } catch {
+    return { ok: false, errors: ["Bestand is geen geldige JSON."] };
+  }
+
+  const migrated = migrate(raw);
+  if (!migrated) {
+    return { ok: false, errors: ["Onbekende of niet-ondersteunde schemaversie."] };
+  }
+  if (!Array.isArray(migrated.persons)) {
+    return { ok: false, errors: ["'persons' ontbreekt of is geen lijst."] };
+  }
+
+  const errors = [];
+  const persons = [];
+  const seenIds = new Set();
+
+  migrated.persons.forEach((p, i) => {
+    const label = `Persoon ${i + 1}`;
+    if (typeof p !== "object" || p === null) {
+      errors.push(`${label}: is geen object.`);
+      return;
+    }
+
+    const name = typeof p.name === "string" ? p.name.trim() : "";
+    if (!name) errors.push(`${label}: naam ontbreekt of is leeg.`);
+
+    const id = typeof p.id === "string" && p.id.length > 0 ? p.id : crypto.randomUUID();
+    if (seenIds.has(id)) errors.push(`${label} ('${name}'): dubbele id '${id}'.`);
+    seenIds.add(id);
+
+    const relationship = p.relationship ?? "other";
+    if (!(relationship in RELATIONSHIPS)) errors.push(`${label} ('${name}'): onbekende relatie '${p.relationship}'.`);
+
+    const frequency = p.frequency ?? "monthly";
+    if (!(frequency in FREQUENCIES)) errors.push(`${label} ('${name}'): onbekende frequentie '${p.frequency}'.`);
+
+    const lastContact = p.lastContact ?? null;
+    if (lastContact !== null && !isValidISODate(lastContact)) {
+      errors.push(`${label} ('${name}'): ongeldige datum laatste contact '${p.lastContact}'.`);
+    }
+
+    const birthday = p.birthday ?? null;
+    if (birthday !== null && !isValidBirthday(birthday)) {
+      errors.push(`${label} ('${name}'): ongeldige verjaardag '${p.birthday}'.`);
+    }
+
+    persons.push({
+      id,
+      name,
+      relationship,
+      frequency,
+      lastContact,
+      birthday,
+      notes: typeof p.notes === "string" ? p.notes : "",
+      contactHistory: sanitizeHistory(p.contactHistory),
+      createdAt: isValidISODate(p.createdAt) ? p.createdAt : null,
+    });
+  });
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, state: { schemaVersion: 1, persons } };
+}

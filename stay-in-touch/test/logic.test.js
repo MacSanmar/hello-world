@@ -20,6 +20,14 @@ import {
   sortByUrgency,
   filterPersons,
   computeStats,
+  emptyState,
+  newPerson,
+  upsertPerson,
+  removePerson,
+  markContacted,
+  migrate,
+  serialize,
+  validateImport,
 } from "../js/logic.js";
 
 const TODAY = "2026-07-31";
@@ -377,5 +385,177 @@ describe("computeStats", () => {
 
   it("handles an empty list", () => {
     assert.deepEqual(computeStats([], TODAY), { tracking: 0, overdue: 0, dueSoon: 0, nextBirthday: null });
+  });
+});
+
+describe("emptyState", () => {
+  it("is a fresh v1 state", () => {
+    assert.deepEqual(emptyState(), { schemaVersion: 1, persons: [] });
+  });
+});
+
+describe("newPerson", () => {
+  it("fills defaults, trims the name and stamps id/createdAt", () => {
+    const p = newPerson({ name: "  Sarah K.  " }, TODAY);
+    assert.equal(p.name, "Sarah K.");
+    assert.equal(typeof p.id, "string");
+    assert.ok(p.id.length > 0);
+    assert.equal(p.createdAt, TODAY);
+    assert.equal(p.relationship, "other");
+    assert.equal(p.frequency, "monthly");
+    assert.equal(p.lastContact, null);
+    assert.equal(p.birthday, null);
+    assert.equal(p.notes, "");
+    assert.deepEqual(p.contactHistory, []);
+  });
+
+  it("generates unique ids", () => {
+    assert.notEqual(newPerson({ name: "A" }, TODAY).id, newPerson({ name: "A" }, TODAY).id);
+  });
+
+  it("accepts valid optional fields", () => {
+    const p = newPerson(
+      { name: "Mama", relationship: "family", frequency: "weekly", lastContact: "2026-07-25", birthday: "02-29", notes: "lief" },
+      TODAY
+    );
+    assert.equal(p.relationship, "family");
+    assert.equal(p.birthday, "02-29");
+    assert.equal(p.notes, "lief");
+  });
+
+  it("rejects invalid input with Dutch TypeErrors", () => {
+    assert.throws(() => newPerson({ name: "" }, TODAY), /Naam/);
+    assert.throws(() => newPerson({ name: "   " }, TODAY), /Naam/);
+    assert.throws(() => newPerson({}, TODAY), /Naam/);
+    assert.throws(() => newPerson({ name: "X", frequency: "daily" }, TODAY), /frequentie/i);
+    assert.throws(() => newPerson({ name: "X", relationship: "vijand" }, TODAY), /relatie/i);
+    assert.throws(() => newPerson({ name: "X", lastContact: "2026-02-30" }, TODAY), /datum/i);
+    assert.throws(() => newPerson({ name: "X", birthday: "02-30" }, TODAY), /verjaardag/i);
+    assert.throws(() => newPerson({ name: "X", birthday: "13-01" }, TODAY), /verjaardag/i);
+  });
+});
+
+describe("upsertPerson / removePerson", () => {
+  const a = person({ id: "a", name: "Anna" });
+  const b = person({ id: "b", name: "Bram" });
+  const state = { schemaVersion: 1, persons: [a, b] };
+
+  it("appends a new person", () => {
+    const c = person({ id: "c", name: "Cas" });
+    const next = upsertPerson(state, c);
+    assert.deepEqual(next.persons.map((p) => p.id), ["a", "b", "c"]);
+    assert.deepEqual(state.persons.map((p) => p.id), ["a", "b"]); // input untouched
+  });
+
+  it("replaces an existing person by id", () => {
+    const next = upsertPerson(state, { ...a, name: "Anouk" });
+    assert.equal(next.persons[0].name, "Anouk");
+    assert.equal(state.persons[0].name, "Anna");
+  });
+
+  it("removes by id and ignores unknown ids", () => {
+    assert.deepEqual(removePerson(state, "a").persons.map((p) => p.id), ["b"]);
+    assert.deepEqual(removePerson(state, "zzz").persons.map((p) => p.id), ["a", "b"]);
+    assert.deepEqual(state.persons.map((p) => p.id), ["a", "b"]);
+  });
+});
+
+describe("markContacted", () => {
+  it("sets lastContact and prepends to contactHistory without mutating input", () => {
+    const p = person({ id: "a", lastContact: "2026-07-01", contactHistory: [{ date: "2026-07-01", note: "" }] });
+    const state = { schemaVersion: 1, persons: [p] };
+    const next = markContacted(state, "a", TODAY, "koffie gedronken");
+    assert.equal(next.persons[0].lastContact, TODAY);
+    assert.deepEqual(next.persons[0].contactHistory[0], { date: TODAY, note: "koffie gedronken" });
+    assert.equal(next.persons[0].contactHistory.length, 2);
+    assert.equal(p.lastContact, "2026-07-01");
+    assert.equal(p.contactHistory.length, 1);
+  });
+
+  it("defaults the note to empty and ignores unknown ids", () => {
+    const p = person({ id: "a" });
+    const state = { schemaVersion: 1, persons: [p] };
+    assert.deepEqual(markContacted(state, "a", TODAY).persons[0].contactHistory, [{ date: TODAY, note: "" }]);
+    assert.deepEqual(markContacted(state, "zzz", TODAY), state);
+  });
+});
+
+describe("migrate", () => {
+  it("passes v1 through and rejects anything else", () => {
+    const state = { schemaVersion: 1, persons: [] };
+    assert.deepEqual(migrate(state), state);
+    assert.equal(migrate({ schemaVersion: 2, persons: [] }), null);
+    assert.equal(migrate({}), null);
+    assert.equal(migrate(null), null);
+    assert.equal(migrate("nee"), null);
+  });
+});
+
+describe("serialize / validateImport", () => {
+  const state = {
+    schemaVersion: 1,
+    persons: [
+      person({ id: "a", name: "Anna", lastContact: "2026-07-01", birthday: "06-18", contactHistory: [{ date: "2026-07-01", note: "hoi" }] }),
+      person({ id: "b", name: "Bram" }),
+    ],
+  };
+
+  it("round-trips", () => {
+    const result = validateImport(serialize(state));
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.state, state);
+  });
+
+  it("rejects malformed JSON and non-objects", () => {
+    assert.equal(validateImport("dit is geen json").ok, false);
+    assert.equal(validateImport("[]").ok, false);
+    assert.equal(validateImport("42").ok, false);
+  });
+
+  it("rejects unsupported schema versions", () => {
+    const result = validateImport(JSON.stringify({ schemaVersion: 99, persons: [] }));
+    assert.equal(result.ok, false);
+    assert.match(result.errors.join(" "), /versie/i);
+  });
+
+  it("rejects a missing persons array", () => {
+    assert.equal(validateImport(JSON.stringify({ schemaVersion: 1 })).ok, false);
+    assert.equal(validateImport(JSON.stringify({ schemaVersion: 1, persons: "nee" })).ok, false);
+  });
+
+  it("rejects persons with missing names, bad enums, bad dates or duplicate ids", () => {
+    const bad = (p) => validateImport(JSON.stringify({ schemaVersion: 1, persons: [p] }));
+    assert.equal(bad({ id: "x" }).ok, false);
+    assert.equal(bad({ id: "x", name: "A", relationship: "vijand" }).ok, false);
+    assert.equal(bad({ id: "x", name: "A", frequency: "daily" }).ok, false);
+    assert.equal(bad({ id: "x", name: "A", lastContact: "2026-02-30" }).ok, false);
+    assert.equal(bad({ id: "x", name: "A", birthday: "02-30" }).ok, false);
+    const dup = validateImport(JSON.stringify({ schemaVersion: 1, persons: [person({ id: "x" }), person({ id: "x" })] }));
+    assert.equal(dup.ok, false);
+    assert.match(dup.errors.join(" "), /dubbel/i);
+  });
+
+  it("strips unknown keys, fills defaults and generates missing ids", () => {
+    const raw = { schemaVersion: 1, persons: [{ name: "Anna", hacker: "<script>" }], evil: true };
+    const result = validateImport(JSON.stringify(raw));
+    assert.equal(result.ok, true);
+    const p = result.state.persons[0];
+    assert.equal("hacker" in p, false);
+    assert.equal("evil" in result.state, false);
+    assert.equal(typeof p.id, "string");
+    assert.equal(p.relationship, "other");
+    assert.equal(p.frequency, "monthly");
+    assert.deepEqual(p.contactHistory, []);
+    assert.equal(p.notes, "");
+  });
+
+  it("drops malformed contactHistory entries but keeps valid ones", () => {
+    const raw = {
+      schemaVersion: 1,
+      persons: [{ id: "a", name: "Anna", contactHistory: [{ date: "2026-07-01", note: "ok" }, { date: "kapot" }, "nee", { note: "geen datum" }] }],
+    };
+    const result = validateImport(JSON.stringify(raw));
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.state.persons[0].contactHistory, [{ date: "2026-07-01", note: "ok" }]);
   });
 });
