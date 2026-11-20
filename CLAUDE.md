@@ -41,6 +41,12 @@ Specialized engineering skills — cherry-picked for quality.
 | **Dependency Auditor** | `.claude/skills/engineering/dependency-auditor/SKILL.md` | Vulnerability and license scanning |
 | **Performance Profiler** | `.claude/skills/engineering/performance-profiler/SKILL.md` | CPU, memory, bundle profiling |
 
+## Design Skills (cathrynlavery/diagram-design)
+
+| Skill | Path | When to use |
+|-------|------|-------------|
+| **Diagram Design** | `.claude/skills/design/diagram-design/SKILL.md` | Architecture, flowchart, sequence, ER, timeline, Sankey and ~45 other diagram types as self-contained HTML/SVG/PNG |
+
 ## Workflow Guidelines
 
 1. **Before coding**: Read the relevant SKILL.md for the workflow you're about to use
