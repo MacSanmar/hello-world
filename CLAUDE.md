@@ -45,7 +45,7 @@ Specialized engineering skills — cherry-picked for quality.
 
 | Skill | Path | When to use |
 |-------|------|-------------|
-| **Diagram Design** | `.claude/skills/design/diagram-design/SKILL.md` | Architecture, flowchart, sequence, ER, timeline, Sankey and ~45 other diagram types as self-contained HTML/SVG/PNG |
+| **Diagram Design** | `.claude/skills/diagram-design/SKILL.md` | Architecture, flowchart, sequence, ER, timeline, Sankey and ~45 other diagram types as self-contained HTML/SVG/PNG |
 
 ## Workflow Guidelines
 
