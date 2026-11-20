@@ -50,7 +50,7 @@ Specialized engineering skills — cherry-picked for quality.
 ## Workflow Guidelines
 
 1. **Before coding**: Read the relevant SKILL.md for the workflow you're about to use
-2. **New features**: Start with Brainstorming → Writing Plans → TDD → Implementation
+2. **New features**: Brainstorming only when requirements or approach are still unclear; otherwise go straight to Writing Plans (for multi-step work) → TDD → Implementation
 3. **Bug fixes**: Use Systematic Debugging or Focused Fix
 4. **Code review**: Use Requesting Code Review → PR Review Expert
 5. **Before finishing**: Always use Verification Before Completion
